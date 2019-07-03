@@ -10,7 +10,7 @@ node run $INPUT_FILENAME.pcapng | tee $OUTPUT_FILENAME.csv
 
 # Filters
 
-Edit `filter-allow.js` with regular expressions for OSC addresses to use.  Edit `filter-deny.js` with regular expressions for OSC addresses to ignore.  Deny wins if both match.  If allow is empty, all are allowed (unless denied).
+Edit `config.js` to filter which OSC addresses are used: `filterDeny` for regular expressions for OSC addresses to ignore, `filterAllow` for regular expressions for OSC addresses to include (if allow is empty, all are allowed; deny wins if both match).
 
 # To do
 

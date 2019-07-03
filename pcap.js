@@ -52,10 +52,7 @@ const BlockType = {
 
 class Pcap {
 
-	constructor() {
-	}
-	
-	parseBlocks(arrayBuffer) {
+	static parseBlocks(arrayBuffer) {
 		const dataView = new DataView(arrayBuffer);
 		//console.log(`DATA: ${dataView.byteLength}`);		
 		const blocks = [];
@@ -82,7 +79,7 @@ class Pcap {
 		return blocks;
 	}
 
-	extractPackets(blocks) {
+	static extractPackets(blocks) {
 		const packets = [];
 		for (let block of blocks) {
 			let type;
@@ -149,12 +146,12 @@ class Pcap {
 		return packets;
 	}
 
-	dumpPacket(packet) {
-		console.log(`PACKET: #${packet.packetIndex} @${timestampString(packet.timestamp)} <${packet.capturedPacketLength}>`)
+	static dumpPacket(packet) {
+		console.log(`PACKET: #${packet.packetIndex} @${timestampString(packet.timestamp)} <${packet.length}/${packet.originalPacketLength}>`)
 		hexDump(packet.dataView, 0, packet.length);
 	}
 
-	parseEthernet(packet) {
+	static parseEthernet(packet) {
 		// Ethernet (14-byte Ethernet frame)
 		// @0  <6> destination host address
 		// @6  <6> source host address
@@ -176,7 +173,7 @@ class Pcap {
 		};
 	}
 
-	parseIp(ethPacket) {
+	static parseIp(ethPacket) {
 		// Internet Protocol (IP)
 		// Only IPv4 for now...
 		if (ethPacket.etherType !== 0x0800) {	// IPv4
@@ -201,7 +198,7 @@ class Pcap {
 		const version = ethPacket.dataView.getUint8(0) >>> 4;	
 		const headerLength = ethPacket.dataView.getUint8(0) & 0xf;	// DWORDs	
 		//const serviceType = ethPacket.dataView.getUint8(1);
-		//const totalLength = ethPacket.dataView.getUint16(2, false);	
+		const totalLength = ethPacket.dataView.getUint16(2, false);	
 		//const identification = ethPacket.dataView.getUint16(4, false);	
 		//const flagsOffset = ethPacket.dataView.getUint16(6, false);	
 		//const timeToLive = ethPacket.dataView.getUint8(8);	
@@ -218,10 +215,19 @@ class Pcap {
 		}
 		const optionLen = headerLength * 4 - 20;
 
+		if (totalLength > ethPacket.dataView.byteLength) {
+			throw new Error(`NOTE: IP packet length ${totalLength} larger than data length ${ethPacket.dataView.byteLength}`);
+		}
+		if (totalLength < ethPacket.dataView.byteLength) {
+			//Pcap.dumpPacket(ethPacket.packet);
+			//console.log(`NOTE: IP packet length ${totalLength} shorter than data length ${ethPacket.dataView.byteLength}`);
+		}
+
 		const ipPacket = {
 			ethPacket,
 			type,
 			sourceAddress,
+			totalLength,
 			source: ipAddress(sourceAddress),
 			destinationAddress,
 			destination: ipAddress(destinationAddress),
@@ -231,7 +237,7 @@ class Pcap {
 		return ipPacket;
 	}
 
-	parseUdp(ipPacket) {
+	static parseUdp(ipPacket) {
 		if (ipPacket.type !== 0x11) {	// UDP
 			return null;
 		}
@@ -251,8 +257,13 @@ class Pcap {
 			throw new Error(`ERROR: Invalid UDP packet length (${lengthHeaderAndData})`);
 		}
 
+		if (lengthHeaderAndData > ipPacket.dataView.byteLength) {
+			throw new Error(`ERROR: UDP length ${lengthHeaderAndData} greater than packet length ${ipPacket.dataView.byteLength}`);
+		}
+		
 		if (lengthHeaderAndData != ipPacket.dataView.byteLength) {
-			console.log(`WARNING: UDP length ${lengthHeaderAndData} does not match packet length ${ipPacket.dataView.byteLength}`);
+			//Pcap.dumpPacket(ipPacket.ethPacket.packet);
+			//console.log(`NOTE: UDP length ${lengthHeaderAndData} shorter than packet length ${ipPacket.dataView.byteLength}`);
 		}
 
 		const udpPacket = {
@@ -267,7 +278,7 @@ class Pcap {
 		return udpPacket;
 	}
 
-	dumpUdp(udpPacket) {
+	static dumpUdp(udpPacket) {
 		const time = timestampString(udpPacket.ipPacket.ethPacket.packet.timestamp);
 		const source = udpPacket.ipPacket.source + ':' + udpPacket.sourcePort;
 		const dest = udpPacket.ipPacket.destination + ':' + udpPacket.destinationPort;

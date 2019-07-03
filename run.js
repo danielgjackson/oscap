@@ -5,38 +5,47 @@ const path = require('path');
 const Pcap = require('./pcap');
 const Osc = require('./osc');
 
-const allowList = require('./filter-allow');
-const denyList = require('./filter-deny');
+const config = require('./config');
 
-function processFile(filename) {
+function filter(oscPacket) {
+    if (oscPacket === null) return false;
+    const allowed = config.allowList.length == 0 || config.allowList.map(re => oscPacket.address.match(re)).some(match => match !== null);
+    const denied = config.denyList.length != 0 && config.denyList.map(re => oscPacket.address.match(re)).some(match => match !== null);
+    return allowed && !denied;
+}
+
+function escape(value) {
+    if (typeof value === 'undefined' || value === null) return '';
+    if (typeof value === 'number') return value;
+    const valueString = value.toString();
+    if (!valueString.includes(',') && !valueString.includes('\"') && !valueString.includes('\r') && !valueString.includes('\n')) {
+        return valueString;     // does not need quoting
+    }
+    return '"' + valueString.replace(/"/, '""') + '"';  // quoted
+}
+
+function processFile(filename, tabular) {
+
     const buffer = fs.readFileSync(filename);
 
-    const pcap = new Pcap();
-    const osc = new Osc();
-    const blocks = pcap.parseBlocks(buffer.buffer);
-    const packets = pcap.extractPackets(blocks);
+    const blocks = Pcap.parseBlocks(buffer.buffer);
+    const packets = Pcap.extractPackets(blocks);
+
+    const oscPackets = [];
 
     for (let packet of packets) {
-        //pcap.dumpPacket(packet);
+        //Pcap.dumpPacket(packet);
         try {
-            const ethernetPacket = pcap.parseEthernet(packet);
+            const ethernetPacket = Pcap.parseEthernet(packet);
             if (ethernetPacket !== null) {
-                const ipPacket = pcap.parseIp(ethernetPacket);
+                const ipPacket = Pcap.parseIp(ethernetPacket);
                 if (ipPacket !== null) {
-                    const udpPacket = pcap.parseUdp(ipPacket);
+                    const udpPacket = Pcap.parseUdp(ipPacket);
                     if (udpPacket !== null) {
-                        //pcap.dumpUdp(udpPacket);
-                        const oscPacket = osc.parseOsc(udpPacket);
+                        //Pcap.dumpUdp(udpPacket);
+                        const oscPacket = Osc.parseOsc(udpPacket);
                         if (oscPacket !== null) {
-
-                            const allowed = allowList.length == 0 || allowList.map(re => oscPacket.address.match(re)).some(match => match !== null);
-                            const denied = denyList.length != 0 && denyList.map(re => oscPacket.address.match(re)).some(match => match !== null);
-
-                            if (allowed && !denied) {
-                                osc.dumpOsc(oscPacket);
-                            } else {
-//                                console.log(`IGNORING: ${oscPacket.address}${!allowed?' [not allowed]':''}${denied?' [denied]':''}`);
-                            }
+                            oscPackets.push(oscPacket);
                         }
                     }
                 }
@@ -45,6 +54,55 @@ function processFile(filename) {
             console.log(`WARNING: Problem parsing this packet: ${e}`);
         }
     }
+
+    const addresses = {};
+    const filtered = [];
+    for (let oscPacket of oscPackets) {
+        if (filter(oscPacket)) {
+            if (!addresses.hasOwnProperty(oscPacket.address)) {
+                addresses[oscPacket.address] = null;
+            }
+            filtered.push(oscPacket);
+        } else {
+        //    console.log(`IGNORING: ${oscPacket.address}${!allowed?' [not allowed]':''}${denied?' [denied]':''}`);
+        }
+    }
+
+    // Use sorted array of headings and create a look-up for the column number
+    const headings = Object.keys(addresses).sort();
+    for (let i in headings) {
+        addresses[headings[i]] = i;
+    }
+
+    if (tabular) { // column headings
+        console.log('Time,Source,Dest,Address,Value,' + headings.map(h => escape(h)).join(','));
+    }
+
+    for (let oscPacket of filtered) {
+        const result = {
+            time: Osc.timestampString(oscPacket.udpPacket.ipPacket.ethPacket.packet.timestamp),
+            source: oscPacket.udpPacket.ipPacket.source, // + ':' + oscPacket.udpPacket.sourcePort;
+            dest: oscPacket.udpPacket.ipPacket.destination, // + ':' + oscPacket.udpPacket.destinationPort;
+            address: oscPacket.address,
+            params: oscPacket.params,
+        };
+
+        let value;
+        if (result.params.length === 0) {
+            value = null
+        } else if (result.params.length === 1) {
+            value = escape(result.params[0]);
+        } else {
+            value = escape(result.params.join(','));
+        }
+
+        // Add required column separators 
+        const column = addresses[result.address];
+        const columnValue = ','.repeat(column) + value + ','.repeat(headings.length - column - 1);
+
+        console.log(`${result.time},${result.source},${result.dest},${result.address},${value}${tabular ? ',' + columnValue : ''}`);
+    }
+
 }
 
 const args = process.argv.slice(2);
@@ -52,6 +110,6 @@ if (args.length === 0) {
 	console.log('ERROR: No .pcapng files specified');
 } else {
 	for (let filename of args) {
-		processFile(filename);
+		processFile(filename, true);
 	}
 }
