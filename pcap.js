@@ -81,14 +81,57 @@ class Pcap {
 
 	static extractPackets(blocks) {
 		const packets = [];
+		const interfaces = [];
+		let interfaceId = 0;
 		for (let block of blocks) {
 			let type;
 			switch (block.blockType) {
 				case BlockType.SECTION_HEADER:
 					type = 'SECTION_HEADER';
+					// New section restarts the interface description
+					interfaceId = 0;
 					break;
 				case BlockType.INTERFACE_DESCRIPTION:
 					type = 'INTERFACE_DESCRIPTION';
+					if (block.length < 20) {
+						throw new Error(`ERROR: Interface Description Block length too small @${block.fileOffset} (${block.length})`);
+					}
+
+					const linkType = block.dataView.getUint16(8, true);
+					const networkInterface = {
+						interfaceId,
+						linkType,	// LINKTYPE_ETHERNET=1, LINKTYPE_EXP_ETHERNET=2
+						timestampSecondsPerTick: 10 ** -6,
+					};
+
+					// Parse options
+					parse: for (let o = 16; o < block.length - 4; ) {
+						const optionType = block.dataView.getUint16(o + 0, true);
+						const optionLength = block.dataView.getUint16(o + 2, true);
+						switch (optionType) {
+							case 0:	// opt_endofopt
+								o = block.length;
+								break parse;
+							case 1: // opt_comment
+								break;
+							case 9:	// if_tsresol
+								const tsresol = block.dataView.getUint8(o + 4, true);
+								if (tsresol & 0x80) {
+									// positive power of 10
+									networkInterface.timestampSecondsPerTick = 10 ** (tsresol & 0x7f);
+								} else {
+									// negative power of 10
+									networkInterface.timestampSecondsPerTick = 10 ** -tsresol;
+								}
+								break;
+							default:
+								break;
+						}
+						o += 4 + 4 * (((optionLength + 3) / 4) | 0);
+					}
+
+					interfaces[networkInterface.interfaceId] = networkInterface;
+					interfaceId++;
 					break;
 				case BlockType.SIMPLE_PACKET:
 					type = 'SIMPLE_PACKET';
@@ -101,40 +144,49 @@ class Pcap {
 					type = 'INTERFACE_STATISTICS';
 					break;
 				case BlockType.ENHANCED_PACKET:
-					type = 'ENHANCED_PACKET';
-					if (block.length < 32) {
-						throw new Error(`ERROR: Enhanced Packet Block length too small @${block.fileOffset} (${block.length})`);
+					{
+						type = 'ENHANCED_PACKET';
+						if (block.length < 32) {
+							throw new Error(`ERROR: Enhanced Packet Block length too small @${block.fileOffset} (${block.length})`);
+						}
+						const interfaceId = block.dataView.getUint32(0, true);
+						const timestampHigh = block.dataView.getUint32(4, true);
+						const timestampLow = block.dataView.getUint32(8, true);
+						const capturedPacketLength = block.dataView.getUint32(12, true);
+						const originalPacketLength = block.dataView.getUint32(16, true);
+						const packetDataOffset = 20;
+						const optionsOffset = packetDataOffset + (4 * ((capturedPacketLength + 3) / 4 | 0));
+						const optionsLength = block.length - 4 - optionsOffset;
+
+						// Network interface
+						const networkInterface = interfaces[interfaceId];
+						let timestampSecondsPerTick = 10 ** -6;	// default is microseconds
+						if (networkInterface && networkInterface.timestampSecondsPerTick) {
+							timestampSecondsPerTick = networkInterface.timestampSecondsPerTick;
+						}
+
+						// Timestamp
+						const timestampRaw = (timestampHigh * 2**32) + timestampLow;	// time since 1970, units specified in Interface Description Block
+						const timestamp = new Date(timestampRaw * timestampSecondsPerTick * 1000);
+
+						// TODO: Should take the LinkType from the interface description block to be able to parse the link layer headers
+						// -- should only include IP packets over Ethernet
+						const newPacket = {
+							block,
+							networkInterface,
+							timestamp,
+							originalPacketLength,
+							dataView: new DataView(block.dataView.buffer, block.dataView.byteOffset + packetDataOffset, capturedPacketLength),
+							length: capturedPacketLength,
+							packetIndex: packets.length,
+						};
+						packets.push(newPacket);
+
+						if (optionsLength > 0) {
+							//console.log(`...OPTIONS: <${optionsLength}>`)
+							//hexDump(block.dataView, optionsOffset, optionsLength);
+						}
 					}
-					const interfaceId = block.dataView.getUint32(0, true);
-					const timestampHigh = block.dataView.getUint32(4, true);
-					const timestampLow = block.dataView.getUint32(8, true);
-					const timestampRaw = (timestampHigh * 2**32) + timestampLow;	// time since 1970, units specified in Interface Description Block
-					const timestampScaleToMillis = 1/1000;	// TODO: Use correct scaling to milliseconds (currently assume microseconds)
-					const timestamp = new Date(timestampRaw * timestampScaleToMillis);
-					const capturedPacketLength = block.dataView.getUint32(12, true);
-					const originalPacketLength = block.dataView.getUint32(16, true);
-					const packetDataOffset = 20;
-					const optionsOffset = packetDataOffset + (4 * ((capturedPacketLength + 3) / 4 | 0));
-					const optionsLength = block.length - 4 - optionsOffset;
-
-					// TODO: Should take the LinkType from the interface description block to be able to parse the link layer headers
-					// -- should only include IP packets over Ethernet
-					const newPacket = {
-						block,
-						interfaceId,
-						timestamp,
-						originalPacketLength,
-						dataView: new DataView(block.dataView.buffer, block.dataView.byteOffset + packetDataOffset, capturedPacketLength),
-						length: capturedPacketLength,
-						packetIndex: packets.length,
-					};
-					packets.push(newPacket);
-
-					if (optionsLength > 0) {
-						//console.log(`...OPTIONS: <${optionsLength}>`)
-						//hexDump(block.dataView, optionsOffset, optionsLength);
-					}
-
 					break;
 				default:
 					type = '<unknown>';
@@ -152,6 +204,11 @@ class Pcap {
 	}
 
 	static parseEthernet(packet) {
+		if (!packet.networkInterface || (packet.networkInterface.linkType !== 1 && packet.networkInterface.linkType !== 2)) {
+			console.error('WARNING: Packet from an unknown interface, or an interface with an unknown (non-Ethernet) LinkType - this packet will be ignored.')
+			return null;
+		}
+
 		// Ethernet (14-byte Ethernet frame)
 		// @0  <6> destination host address
 		// @6  <6> source host address

@@ -122,7 +122,7 @@ function processFile(filename, tabular) {
 		
 		const file = `${basename}-${address}.csv`;
 		const filePath = path.join(path.dirname(filename), file);
-		console.log(`WRITING: ${file} (${lines.length - tabular ? 1 : 0} lines)`);
+		console.log(`WRITING: ${file} (${lines.length - (tabular ? 1 : 0)} packets)`);
 		fs.writeFileSync(filePath, lines.join('\n'));
 	}
 }
