@@ -5,14 +5,14 @@ Open Sound Control (OSC) packet extraction from .PCAPNG files.
 # Usage
 
 ```bash
-node run $INPUT_FILENAME.pcapng | tee $OUTPUT_FILENAME.csv
+node run $INPUT_FILENAME.pcapng
 ```
 
-Each OSC packet creates a row of the output containing:
+This will generate an output file for each source IP address found, named with the same (base) name as the input, with the address and a `.csv` extension appended.  Each OSC packet from that source creates a row of the output containing:
 
 > Time,Source,Dest,Address,Value
 
-Each of the different addresses will form an additional column and the value will be replicated in the column for the current address -- this allows for easy plotting in a spreadsheet.
+Each of the different OSC addresses will form an additional column and the value will be replicated in the column for the current address -- this allows for easy plotting in a spreadsheet.
 
 # Filters
 
